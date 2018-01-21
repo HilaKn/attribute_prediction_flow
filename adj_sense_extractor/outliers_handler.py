@@ -9,6 +9,7 @@ from commons.foldes_and_files import *
 import logging
 from config import *
 from models import we_model
+from commons.logger import logger
 
 class Handlers:
 
@@ -87,8 +88,11 @@ class PatternsHandler(OutlierHandler):
                     try:
                         noun_1 = lemmatizer.lemmatize(data[0])
                         noun_2 = lemmatizer.lemmatize(data[1])
-                    except :
-                        logging.exception("Unexpected error. skipping nouns")
+                    except UnicodeDecodeError:
+                        logger.debug("UnicodeDecodeError error. skipping nouns")
+                        continue
+                    except:
+                        logger.exception("unexpected error. skipping nouns")
                         continue
                     count = int(data[4])
                     noun_to_nouns[noun_1][noun_2] += count

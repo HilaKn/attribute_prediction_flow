@@ -35,6 +35,7 @@ class AdjProcessor(object):
         self.clustering_input = np.array([])
         self.unclustered_contexts = [] # list of contexts bellow minimum occurrence threshold
         self.unclustered_labels = {}
+        self.final_labeling = []
 
     def prepare_data(self):
         current_adj_pickle_path = os.path.join(adj_pickles_path,self.adj)
@@ -60,19 +61,20 @@ class AdjProcessor(object):
                 index += 1
             else:
                 self.unclustered_contexts.extend(contexts)
+        print len(self.filtered_contexts_list), len(self.unique_contexts)
 
 
         if len(self.unique_contexts) < MIN_UNIQUE_ITEMS_FOR_CLUSTERING:
-            logging.info( "only [{}] unique contexts for [{}]. moving to next adj".format(len(self.unique_contexts), self.adj))
+            logger.info( "only [{}] unique contexts for [{}]. moving to next adj".format(len(self.unique_contexts), self.adj))
             self.filtered_contexts_list = []
             return
 
-        logging.info("Clustering adj: [{}] with [{}] contexts and [{}] unique contexts".format(self.adj,
+        logger.info("Clustering adj: [{}] with [{}] contexts and [{}] unique contexts".format(self.adj,
                                                                                          len(self.filtered_contexts_list),
                                                                                          len(self.unique_contexts)))
 
         self.clustering_input = np.array([model.word_vec(context.head_noun) for context in self.unique_contexts])
-        logging.info("input is ready. shape: {}".format(self.clustering_input.shape))
+        logger.info("input is ready. shape: {}".format(self.clustering_input.shape))
 
 
     # def get_outlier_label(self, outlier_vec, final_outliers_flag, sorted_labels_avg):
@@ -86,29 +88,33 @@ class AdjProcessor(object):
         try:
             performance_file = open(clustering_performance_file, 'a')
             start = timeit.default_timer()
-            logging.info("DBSCAN clustering [{}] for".format(self.adj))
-            clustering_alg = DBSCAN(eps=0.4, min_samples=5, metric='cosine', algorithm='brute', n_jobs=20).\
+            logger.info("DBSCAN clustering [{}]".format(self.adj))
+            clustering_alg = DBSCAN(eps=0.4, min_samples=5, metric='cosine', algorithm='brute', n_jobs=1).\
                 fit(self.clustering_input)
+            #todo
+            end_dbscan_1 = timeit.default_timer()
 
             k_1 = len(set(clustering_alg.labels_))
 
-            logging.info("done clustering [{}] with [{}] clusters".format(self.adj, k_1))
+            logger.info("done clustering [{}] with [{}] clusters".format(self.adj, k_1))
 
             outlier_idx = [idx for idx, label in enumerate(clustering_alg.labels_) if
                             label == -1]  #save all indexes of outlier samples
             outlier_input = np.array([self.clustering_input[i] for i in outlier_idx])
 
-            logging.info("DBSCAN clustering [{}] outliers".format(len(outlier_input)))
 
-            clustering_alg_2 = DBSCAN(eps=0.5, min_samples=5, metric='cosine', algorithm='brute', n_jobs=20).fit(
+            logger.info("DBSCAN clustering [{}] outliers".format(len(outlier_input)))
+
+            start_db_scan_2 = timeit.default_timer()
+            clustering_alg_2 = DBSCAN(eps=0.5, min_samples=5, metric='cosine', algorithm='brute', n_jobs=1).fit(
                 outlier_input)
-            end_dbscan = timeit.default_timer()
+            end_all_dbscan = timeit.default_timer()
 
             k_2 = len(set(clustering_alg_2.labels_))
             # outlier_idx_2 = [idx for idx, label in enumerate(clustering_alg_2.labels_) if
             #                     label == -1]  #save all indexes of outlier samples
             # outlier_vecs_2 = [outlier_input[i] for i in outlier_idx_2]
-            logging.info("done clustering [{}] with [{}] clusters".format(self.adj, k_2))
+            logger.info("done clustering [{}] with [{}] clusters".format(self.adj, k_2))
 
             label_id_gap = k_1 - (1 if -1 in clustering_alg.labels_ else 0)
 
@@ -127,24 +133,26 @@ class AdjProcessor(object):
                     label_to_contexts_vecs[-1].append(outlier_input[[i], :])
 
 
-            logging.info("Generate label to avg vector dictionary")
+            logger.info("Generate label to avg vector dictionary")
 
             label_to_matrix = {label: np.array(context_vecs).squeeze() for label, context_vecs in
                                 label_to_contexts_vecs.iteritems()}
+            label_to_matrix.pop(-1, None)
+
             label_to_avg = {label: np.average(matrix, axis=0) for label, matrix in label_to_matrix.iteritems()}
 
             sorted_labels = sorted(label_to_avg.items(), key=operator.itemgetter(0))
             sorted_labels_avg = np.array([item[1] for item in sorted_labels])
 
-            logging.info("Done generate label to avg vector dictionary")
+            logger.info("Done generate label to avg vector dictionary")
 
 
 
             # outliers_from_1st_labeled_at_2nd = [for i, org_i in enumerate(outlier_idx)  if clustering_alg_2.labels_[i] != -1]
-            final_outliers_flag = 1 if -1 in clustering_alg_2.labels_ else 0
+            # final_outliers_flag = 1 if -1 in clustering_alg_2.labels_ else 0
             outliers_words = [context.head_noun for context in self.unique_contexts]
             outlier_handler.update_initial_data(sorted_labels_avg
-                                            , self.clustering_input, outliers_words, final_outliers_flag)
+                                            , self.clustering_input, outliers_words)
 
             clustering_labels = clustering_alg.labels_
             for i, org_i in enumerate(outlier_idx):
@@ -163,28 +171,30 @@ class AdjProcessor(object):
             #
             ######TRY TO REPLACE THE ABOVE
 
-            logging.info("before final labeling")
+            logger.info("before final labeling")
 
             self.final_labeling = [clustering_labels[self.data_mapper[i]]
                                    for i in xrange(0, len(self.filtered_contexts_list))]
 
-            logging.info("start file writing")
+            logger.info("start file writing")
 
             k = len(label_to_avg.keys())
             if k > 2 or (k == 2 and -1 not in label_to_avg.keys()):
                 self.output_clusters()#self.final_labeling
-                logging.info("done file writing")
+                logger.info("done file writing")
             else:
-                logging.info("because no real clusters were found, [{}] won't be written to file".format(self.adj))
+                logger.info("because no real clusters were found, [{}] won't be written to file".format(self.adj))
                 self.final_labeling = None
 
             end = timeit.default_timer()
-            performance_file.write("{}\t{}\t{}\n".format(self.clustering_input.shape[0],
-                                                         end-start,
-                                                         end_dbscan-start))
-            logging.info("done clustering")
+            performance_file.write("{}\t{}\t{}\t{}\t{}\n".format(self.clustering_input.shape[0],
+                                                         end-start, #all cluster method
+                                                         end_all_dbscan-start,#both dbscan inner processing
+                                                         end_dbscan_1 - start, #dbscan 1
+                                                         end_all_dbscan - start_db_scan_2)) #dbscan 2
+            logger.info("done clustering")
         except:
-            logging.exception("Failed to cluster adjective: [{}]".format(self.adj))
+            logger.exception("Failed to cluster adjective: [{}]".format(self.adj))
         finally:
             performance_file.close()
 
@@ -215,7 +225,7 @@ class AdjProcessor(object):
                 # print "avg vec shape: {}".format(label_to_vec[label].shape)
         sorted_label_to_vec = sorted(label_to_vec.items(), key=operator.itemgetter(0))
         labels_matrix = np.array([item[1] for item in sorted_label_to_vec]).squeeze()
-        logging.debug("labels matrix shape = {}".format(labels_matrix.shape))
+        logger.debug("labels matrix shape = {}".format(labels_matrix.shape))
         model_output_path = os.path.join(adj_clusters_path, self.adj)
         np.savetxt(model_output_path,labels_matrix)
         return labels_matrix
@@ -238,10 +248,11 @@ class AdjProcessor(object):
         self.prepare_data()
         if self.clustering_input.size:
             self.cluster(outlier_handler)
-            labels_matrix = self.output_clusters()
-            self.unclustered_labels = self.set_label_for_unclustered(outlier_handler, labels_matrix)
+            if self.final_labeling:
+                labels_matrix = self.output_clusters()
+                self.unclustered_labels = self.set_label_for_unclustered(outlier_handler, labels_matrix)
         else:
-            logging.info("skipping adj {}".format(self.adj))
+            logger.info("skipping adj {}".format(self.adj))
 
 
 class AdjSensesClusteringRunner(object):
@@ -262,14 +273,17 @@ class AdjSensesClusteringRunner(object):
     def adj_list(self):
         if not self.__adj_list:
             if self.analyze_subset_flag:
-                self.__adj_list = ADJ_SUBSET_FOR_CLUSTERING
+                adj_subset_file = os.path.join(adj_subsets_folder, ADJ_SUBSET_FOR_CLUSTERING_FILE_NAME)
+                with open(adj_subset_file) as f:
+                    self.__adj_list = f.read().splitlines()
+                 # self.__adj_list= ADJ_SUBSET_FOR_CLUSTERING_FILE_NAME
             else:
                 self.__adj_list = [file for file in os.listdir(adj_pickles_path)]
         return self.__adj_list
 
 
     def update_sentence_to_labeled_adj(self, adj_processor):
-        logging.info("before updating sent_to_labeled_adj")
+        logger.info("before updating sent_to_labeled_adj")
 
         for i in xrange(0, len(adj_processor.filtered_contexts_list)):
             context = adj_processor.filtered_contexts_list[i]
@@ -282,11 +296,11 @@ class AdjSensesClusteringRunner(object):
             context.update_label(adj_processor.unclustered_labels[i])
             self.sent_to_labeled_adj[context.sentence_id].append(context)
 
-        logging.info("after updating sent_to_labeled_adj")
+        logger.info("after updating sent_to_labeled_adj")
 
     def update_text_corpus(self):
         # update corpus from original sentences file
-        logging.info("Start updating corpus with new adjectives labels")
+        logger.info("Start updating corpus with new adjectives labels")
         output_text_file = os.path.join(OUTPUT_FOLDER, self.output_file)
         with io.open(self.input_file, 'r', encoding='utf8') as fi, \
                 io.open(output_text_file, 'w', encoding='utf8')as fo:
@@ -306,22 +320,26 @@ class AdjSensesClusteringRunner(object):
 
                 sentence_id += 1
                 if (sentence_id % 100000 == 0):
-                    print "update corpus:  sentence {}".format(sentence_id)
+                    logger.debug("update corpus:  sentence {}".format(sentence_id))
                     # break
         print "Done generating new sentences file"
 
     def run(self):
 
         adj_processors = [AdjProcessor(adj) for adj in self.adj_list]
+        logger.info("Starting to cluster {} adjectives".format(len(adj_processors)))
+        count = 1
         for adj_processor in adj_processors:
+            logger.info("working on adjective number = [{}] from [{}]".format(count, len(adj_processors)))
             adj_processor.run(self.outlier_handler)
-            if adj_processor.filtered_contexts_list:
+            if adj_processor.final_labeling:
                 self.update_sentence_to_labeled_adj(adj_processor)
             else:
-                logging.info("No update for sent_to_labeled_adj")
+                logger.info("No update for sent_to_labeled_adj")
+            count+=1
 
         print "Done clustering all adjectives"
-        logging.info("Done clustering all adjectives")
+        logger.info("Done clustering all adjectives")
         self.update_text_corpus()
 
 
